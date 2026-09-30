@@ -192,6 +192,7 @@ console.log('RESULT ' + JSON.stringify({
   scores: results.map(r => r.score),
   avg: avg, mid: mid, min: min, max: max,
   maxTier: maxTier, drops: totalDrops, callsPerStep: Math.round(callsPerStep),
+  ply2: AUTO.stats.ply2 || 0,
   capped: results.filter(r => r.capped).length,
   maxFrames: MAX_FRAMES
 }));
@@ -218,8 +219,17 @@ if (!QUIET) {
     '（帧 ' + results.map(r => r.frames).join('/') + '）');
   check('每局都合到了椰子以上（第 9 级）', results.every(r => r.maxTier >= 8),
     '各局最大等级 = ' + results.map(r => r.maxTier).join('/'));
-  check('每步推演 ≤ 2600 次 stepPhysics（浏览器里约 0.1 秒量级）', callsPerStep <= 2600,
-    callsPerStep.toFixed(0) + ' 次/步');
+  /* 2 层推演必须**真的**在跑。以前它踩在 tryDrop() 的 ready 闸门上整个空转，
+     分数和推演次数都和 1 层一模一样，从外面完全看不出来。
+     断言"计数 > 0"，这类静默空转就再也藏不住了。 */
+  if (AUTO.CFG.wPly2 > 0) {
+    check('2 层推演真的跑了（不是静默空转）', (AUTO.stats.ply2 || 0) > 0,
+      'ply2 推演成功 ' + (AUTO.stats.ply2 || 0) + ' 次');
+  }
+  /* 成本上限跟着配置走：开了 2 层，每步推演次数本来就要涨（实测约 1.7 倍） */
+  const costLimit = AUTO.CFG.wPly2 > 0 ? 5000 : 2600;
+  check('每步推演 ≤ ' + costLimit + ' 次 stepPhysics（浏览器里约 0.1 秒量级）',
+    callsPerStep <= costLimit, callsPerStep.toFixed(0) + ' 次/步');
   const cappedN = results.filter(r => r.capped).length;
   if (cappedN) {
     log('  注意：有 ' + cappedN + ' 局撞到帧上限（' + MAX_FRAMES +

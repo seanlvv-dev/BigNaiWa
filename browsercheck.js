@@ -507,6 +507,75 @@ const check = (name, ok, detail) => {
     check('信息条会显示目标分', /目标\s*5000/.test(qBoot.stat), qBoot.stat);
     drain();
     check('URL 参数模式无 JS 报错', errs.length === 0, errs.slice(0, 3).join(' | '));
+
+    /* 14. ?ply2= 打开 2 层推演。
+       重点是断言 stats.ply2 > 0 —— 这个计数只在第 2 层**真的推演成功**时才涨。
+       之前第 2 层踩了 tryDrop() 的 ready 闸门，整个空转，分数和推演次数
+       和 1 层一模一样，从外面完全看不出来。有了这个计数就藏不住了。 */
+    console.log('\n== ?ply2= 打开 2 层推演 ==');
+    const p2Url = URL_GAME + (URL_GAME.indexOf('?') >= 0 ? '&' : '?') +
+                  'auto=1&speed=8&ply2=0.5&record=0';
+    await cdp.send('Page.navigate', { url: p2Url });
+    await sleep(2200);
+    const p2Cfg = await cdp.eval(`(() => ({
+      wPly2: DNW_AUTO.CFG.wPly2,
+      top: DNW_AUTO.CFG.ply2Top,
+      wide: DNW_AUTO.CFG.ply2Wide
+    }))()`);
+    check('?ply2=0.5 写进了 CFG.wPly2', p2Cfg.wPly2 === 0.5, JSON.stringify(p2Cfg));
+    await sleep(6000);                       // 给它几步时间真的跑出第 2 层
+    const p2Run = await cdp.eval(`(() => ({
+      ply2: DNW_AUTO.stats.ply2,
+      drops: DNW_AUTO.stats.drops,
+      thinkMs: Math.round(DNW_AUTO.stats.thinkMs)
+    }))()`);
+    check('2 层推演在真浏览器里真的跑了（不是静默空转）',
+      p2Run.ply2 > 0, 'ply2=' + p2Run.ply2 + ' 投放=' + p2Run.drops +
+      ' 思考=' + p2Run.thinkMs + 'ms');
+    drain();
+    check('?ply2= 模式无 JS 报错', errs.length === 0, errs.slice(0, 3).join(' | '));
+
+    /* 15. 排行榜提交规则 —— 把 record 的四种取值全钉住。
+       以前只验到 "window.DanaiwaBoard 存在"，等于没验：
+       真正要保证的是「**什么时候会提交、什么时候不会**」。
+       做法：把 DanaiwaBoard.onGameOver 换成探针，再用 __DNW__.gameOver()
+       确定性地制造一次"游戏结束"，看探针被调用了几次。
+       注意 isRecordGame 判的是 state.score >= state.best，所以直接摆这两个值
+       就能造出"新高局"和"非新高局"。 */
+    console.log('\n== 排行榜提交规则（record 的四种取值）==');
+    const boardCase = async (label, setup, expectCalls) => {
+      await cdp.eval(`(() => {
+        window.__boardSpy = [];
+        window.DanaiwaBoard.onGameOver = function (s) { window.__boardSpy.push(s); };
+        const A = window.DNW_AUTO;
+        A.enabled = false;                      // 先关掉，免得重开逻辑插进来
+        ${setup}
+        __DNW__.gameOver();
+      })()`);
+      const got = await cdp.eval('window.__boardSpy');
+      check(label, got.length === expectCalls,
+        '提交了 ' + got.length + ' 次' + (got.length ? '：' + JSON.stringify(got) : ''));
+    };
+
+    await boardCase('自动·默认record·新高局 → 交榜',
+      'A.record = true; A.enabled = true; __DNW__.state.best = 0; __DNW__.state.score = 5000;', 1);
+    await boardCase('自动·默认record·非新高局 → 不交（免得把高分挤出 20 条窗口）',
+      'A.record = true; A.enabled = true; __DNW__.state.best = 9999; __DNW__.state.score = 100;', 0);
+    await boardCase('自动·record=all·非新高局 → 照交',
+      "A.record = 'all'; A.enabled = true; __DNW__.state.best = 9999; __DNW__.state.score = 100;", 1);
+    await boardCase('自动·record=false·新高局 → 不交',
+      'A.record = false; A.enabled = true; __DNW__.state.best = 0; __DNW__.state.score = 5000;', 0);
+    await boardCase('手动（自动关）·新高局 → 交（上游行为不变）',
+      'A.record = true; A.enabled = false; __DNW__.state.best = 0; __DNW__.state.score = 3000;', 1);
+    /* record 是**自动模式**的设置（autoBlocked() = enabled && record === false），
+       所以自动关掉之后它就是上游原本的行为。这条不是"漏网的 bug"，
+       是有意为之 —— 钉住它，免得以后有人误以为 record=false 应该全局静音。
+       文档也按这个口径写清楚了。 */
+    await boardCase('手动·record=false → 照交（record 只管自动模式）',
+      'A.record = false; A.enabled = false; __DNW__.state.best = 0; __DNW__.state.score = 3000;', 1);
+    await cdp.eval('window.DNW_AUTO.enabled = false');
+    drain();
+    check('排行榜探针模式无 JS 报错', errs.length === 0, errs.slice(0, 3).join(' | '));
   } catch (e) {
     console.log('  [NG] 验证脚本自己挂了：' + e.message);
     pass = false;

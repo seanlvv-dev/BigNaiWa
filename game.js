@@ -1290,6 +1290,10 @@
   window.__DNW__ = {
     state, reset, tryDrop, stepPhysics, FRUITS, render, resizeCanvas, shapeOf, makeBall,
     aimLimit, snapshotState, restoreState, setSim,
+    /* gameOver 只给测试用：验收脚本要能**确定性地**制造一次"游戏结束"，
+       才能验证「默认只在刷新最高分时才交榜」这条规则真的生效
+       （之前只验到 window.DanaiwaBoard 存在，等于没验）。 */
+    gameOver,
     W, H, WALL, DANGER_Y, SUBSTEPS, FIXED, MAX_TIER
   };
 })();

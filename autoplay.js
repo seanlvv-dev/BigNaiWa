@@ -87,6 +87,17 @@
     wVoid: 0,
     wNext: 0.6,           // 给「下一颗」留的合成机会（0 = 关掉这层眼光）
 
+    /* —— 2 层推演 ——
+       1 层贪心只看"这一步落完，盘面好不好"。它看不见"这一步落完，
+       下一颗就没地方放了"这种死局。开启后：先用 1 层把候选排个序，
+       再对前 ply2Top 名**各试几种下一颗的落法**，用两者的加权平均定胜负。
+       wPly2 = 0 表示关闭（默认）。实测见 README —— 这一项是贵活，
+       每步推演次数大约涨 1.5 倍，开之前先确认值不值。 */
+    wPly2: 0,             // 2 层结果的混合权重（0 = 关）
+    ply2Top: 2,           // 只对 1 层的前几名做 2 层
+    ply2Wide: 3,          // 每个候选试几种"下一颗"的落法
+    ply2Frames: 70,       // 2 层推演的帧数上限（比 1 层短，控制成本）
+
     /* 目标分：>0 时，自动最高分一到就**停下来**（不无限开下一局）。
        单局分数方差很大，想"榜上留个 5000+"最省事的办法就是让它一直打到够为止 ——
        地址后面加 ?target=5000 即可。0 = 不设目标，一直挂机。 */
@@ -108,7 +119,7 @@
     plan: null,
     lastDropAt: -1e9,
     overAt: 0,
-    stats: { games: 0, lastScore: 0, bestScore: 0, drops: 0, thinkMs: 0 },
+    stats: { games: 0, lastScore: 0, bestScore: 0, drops: 0, thinkMs: 0, ply2: 0 },
     reached: 0            // 到了目标分就记在这儿（0 = 还没到）
   };
   window.DNW_AUTO = Auto;
@@ -434,20 +445,13 @@
     return true;
   }
 
-  /* 前提：当前 state 已经等于 snap（调用方保证） */
-  function tryCandidate(x) {
-    state.aimX = x;
-    const before = state.score;
-    const n0 = state.balls.length;
-    DNW.tryDrop();
-    if (state.balls.length === n0) return null;   // 没投出去（理论上不会发生）
-
-    /* 推到“落定”为止：安静满 quietFrames 帧就提前收工。
-       省下来的时间拿去把 simFrames 的上限调大 —— 该慢慢等的大果照样等得到，
-       而绝大多数普通一手在 30 来帧就收工了。 */
+  /* 推到"落定"为止：安静满 quietFrames 帧就提前收工。
+     省下来的时间拿去把帧数上限调大 —— 该慢慢等的大果照样等得到，
+     而绝大多数普通一手在 30 来帧就收工了。 */
+  function rollout(maxFrames) {
     const sub = FIXED / SUBSTEPS;
     let quiet = 0;
-    for (let f = 0; f < CFG.simFrames; f++) {
+    for (let f = 0; f < maxFrames; f++) {
       for (let s = 0; s < SUBSTEPS; s++) DNW.stepPhysics(sub);
       if (f + 1 >= CFG.minFrames && quietNow()) {
         if (++quiet >= CFG.quietFrames) break;
@@ -455,9 +459,67 @@
         quiet = 0;
       }
     }
+  }
 
+  /* 在当前 state 上投一颗、推到稳定，返回这一步的收益与落定后的评分。
+     调用方负责保证 state 已经等于出发点。 */
+  function dropAndScore(x, maxFrames) {
+    state.aimX = x;
+    const before = state.score;
+    const n0 = state.balls.length;
+    DNW.tryDrop();
+    if (state.balls.length === n0) return null;   // 没投出去（理论上不会发生）
+    rollout(maxFrames);
     const gain = state.score - before;
-    return { x: x, gain: gain, value: evaluateBoard(state.balls, gain) };
+    return { gain: gain, value: evaluateBoard(state.balls, gain) };
+  }
+
+  function tryCandidate(x) {
+    const r = dropAndScore(x, CFG.simFrames);
+    if (!r) return null;
+    r.x = x;
+    /* 落定后的盘面留一份 —— 第 2 层要从这里接着往下试。
+       注意：tryDrop() 一投出去就把 state.ready 置成 false（game.js 里
+       的冷却/动画闸门），紧接着快照下来的 ready 必然是 false。
+       而 tryDrop() 开头就是 `if (state.over || !state.ready) return;` ——
+       直接拿这份快照去投第二颗，会**静默地什么都不做**，
+       第 2 层于是白跑一场、算出来的分和 1 层一模一样。
+       这里把 ready/cooldown 抹掉：它们是"什么时候能再投"的闸门，
+       不属于盘面状态。推演要问的是"紧接着投下一颗会怎样"。 */
+    r.after = null;
+    if (CFG.wPly2 > 0) {
+      r.after = DNW.snapshotState();
+      r.after.ready = true;
+      r.after.cooldown = 0;
+    }
+    return r;
+  }
+
+  /* 第 2 层：在"第一颗已经落定"的盘面上，试几种下一颗的落法，
+     取其中最好的那个盘面分。这一步专门用来躲开
+     "这一步看着还行、下一步直接没地方放"的死局。 */
+  function ply2Value(cand) {
+    DNW.restoreState(cand.after);
+    const tier = state.pending;                 // 下一颗是什么（after 里存好了）
+    const all = makeCandidates(tier);
+    const scored = [];
+    for (let i = 0; i < all.length; i++) scored.push({ x: all[i], s: quickScore(all[i], tier) });
+    scored.sort(function (a, b) { return b.s - a.s; });
+
+    let best = -Infinity;
+    const n = Math.min(CFG.ply2Wide, scored.length);
+    for (let i = 0; i < n; i++) {
+      DNW.restoreState(cand.after);
+      const r = dropAndScore(scored[i].x, CFG.ply2Frames);
+      if (r && r.value > best) best = r.value;
+    }
+    DNW.restoreState(cand.after);
+    /* 数一下第 2 层**真的**推演成功了几次。
+       以前没有这个计数，第 2 层因为上面的 ready 坑整个空转，
+       外面却完全看不出来（分数和推演次数都和 1 层一模一样）。
+       自检里断言它 > 0，这类"静默空转"就再也藏不住了。 */
+    if (best !== -Infinity) Auto.stats.ply2++;
+    return best === -Infinity ? cand.value : best;
   }
 
   /* ---------------------------------------------------------
@@ -538,7 +600,10 @@
         snap: DNW.snapshotState(),
         xs: shortlist(state.pending),
         i: 0,
+        phase: 1,           // 1 = 精筛（所有候选）  2 = 对前几名做 2 层
+        top: [],
         best: null,
+        winner: null,
         t0: t
       };
     }
@@ -548,21 +613,47 @@
     let done = 0;
 
     DNW.setSim(true);
-    while (plan.i < plan.xs.length && now() - t0 < CFG.budgetMs) {
-      DNW.restoreState(plan.snap);          // 每个候选都从同一张干净棋盘出发
-      const res = tryCandidate(plan.xs[plan.i++]);
-      if (res && (!plan.best || res.value > plan.best.value)) plan.best = res;
-      done++;
+    while (now() - t0 < CFG.budgetMs) {
+      if (plan.phase === 1) {
+        if (plan.i >= plan.xs.length) {
+          /* 精筛完了：如果开了 2 层，就把前几名拎出来接着算 */
+          if (CFG.wPly2 > 0 && plan.top.length) {
+            plan.top.sort(function (a, b) { return b.value - a.value; });
+            if (plan.top.length > CFG.ply2Top) plan.top.length = CFG.ply2Top;
+            plan.phase = 2;
+            plan.i = 0;
+            continue;                       // 这一帧接着做第 2 层，别白等一帧
+          }
+          break;
+        }
+        DNW.restoreState(plan.snap);          // 每个候选都从同一张干净棋盘出发
+        const res = tryCandidate(plan.xs[plan.i++]);
+        if (res) {
+          if (!plan.best || res.value > plan.best.value) plan.best = res;
+          plan.top.push(res);
+        }
+        done++;
+      } else {
+        if (plan.i >= plan.top.length) break;
+        const cand = plan.top[plan.i++];
+        const v2 = ply2Value(cand);
+        cand.blended = (1 - CFG.wPly2) * cand.value + CFG.wPly2 * v2;
+        if (!plan.winner || cand.blended > plan.winner.blended) plan.winner = cand;
+        done++;
+      }
     }
     DNW.restoreState(plan.snap);            // 棋盘还原干净，画面里不会出现推演的鬼影
     DNW.setSim(false);
 
     if (done) Auto.stats.thinkMs += now() - t0;
 
-    if (plan.i < plan.xs.length) { setStatus('thinking'); return; }
+    const finished = plan.phase === 1
+      ? (plan.i >= plan.xs.length && !(CFG.wPly2 > 0 && plan.top.length))
+      : (plan.i >= plan.top.length);
+    if (!finished) { setStatus('thinking'); return; }
 
     /* —— 想完了：落子 —— */
-    const best = plan.best;
+    const best = (CFG.wPly2 > 0 && plan.winner) ? plan.winner : plan.best;
     Auto.plan = null;
     if (!best) { setStatus('idle'); return; }
 
@@ -728,6 +819,19 @@
     if (isFinite(tg) && tg > 0) CFG.targetScore = Math.round(tg);
     const sp = Number(q.get('speed'));
     if (SPEEDS.indexOf(sp) >= 0) Auto.speed = sp;
+    /* 2 层推演的混合权重。0 = 关掉（想省 CPU 就用它）。
+       ?ply2=0.5 打开；想再省一点可以配 ?ply2top=1&ply2wide=2。 */
+    const p2 = Number(q.get('ply2'));
+    if (isFinite(p2) && p2 >= 0 && p2 <= 1) CFG.wPly2 = p2;
+    const p2t = Number(q.get('ply2top'));
+    if (isFinite(p2t) && p2t >= 1) CFG.ply2Top = Math.round(p2t);
+    const p2w = Number(q.get('ply2wide'));
+    if (isFinite(p2w) && p2w >= 1) CFG.ply2Wide = Math.round(p2w);
+    /* 等棋盘安静的上限（**真实**秒）。调小 = 少等、投得更快，
+       但会对着还在动的盘面做决策。倍速越高，棋盘在真实时间里落定得越快，
+       这一项就越不咬人 —— 所以它的效果必须按倍速分开测（见 README）。 */
+    const st = Number(q.get('settle'));
+    if (isFinite(st) && st > 0) CFG.settleTimeout = st;
     if (q.has('auto') && q.get('auto') !== '0') setEnabled(true);
   })();
 

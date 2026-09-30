@@ -34,8 +34,15 @@ function findBrowser() {
 }
 
 const BROWSER = findBrowser();
-const URL_GAME = process.env.DNW_URL ||
-  'http://127.0.0.1:8080/index.html?auto=1&speed=4';
+/* DNW_URL 会**整个替换**默认地址（含查询串）。以前踩过的坑：
+   只写 http://127.0.0.1:8099/index.html 而忘了 ?auto=1，
+   结果挂机页起来了、自动模式却是关的，白跑一轮。
+   所以这里兜一手：给了 DNW_URL 但没带查询串，就自动补上默认参数。 */
+const URL_GAME = (function () {
+  const raw = process.env.DNW_URL;
+  if (!raw) return 'http://127.0.0.1:8080/index.html?auto=1&speed=4';
+  return raw.indexOf('?') >= 0 ? raw : raw + '?auto=1&speed=4';
+})();
 const PORT = Number(process.env.DNW_PORT || 9360);
 const MIN_A = Number(process.env.SOAK_MIN || 4) * 60000;
 const MIN_B = Number(process.env.SOAK_STRESS_MIN || 2) * 60000;
@@ -136,14 +143,25 @@ const check = (n, ok, d) => { console.log((ok ? '  [OK] ' : '  [NG] ') + n + (d 
           errs.push('exception: ' + (e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text));
         } else if (e.method === 'Log.entryAdded' && e.params.entry.level === 'error') {
           const t = e.params.entry.text || '', u = e.params.entry.url || '';
+          /* 已知的"环境噪声"，不是代码问题，别让它把整轮压测判成失败：
+             - favicon / navigator.vibrate：无头浏览器的老面孔；
+             - tinywebdb 的 CORS：排行榜后端不给 127.0.0.1 发 Access-Control-Allow-Origin，
+               所以**本地服务器上排行榜必然报 CORS**，上线到 GitHub Pages 就正常了。
+               实测过一整轮 20 分钟 8×：唯一那条 NG 就是这个，代码本身干净。
+               （顺带说明：browsercheck 的"提交规则"那组是拿探针替换 onGameOver 验的，
+                 只验"什么时候交"，不验"交得出去"—— 网络那一跳是上游代码，没改过。） */
           if (/favicon\.ico|navigator\.vibrate/.test(t) || /favicon\.ico/.test(u)) continue;
+          if (/tinywebdb|Access-Control-Allow-Origin|ERR_FAILED/.test(t) || /tinywebdb/.test(u)) continue;
           errs.push('console.error: ' + t);
         }
       }
     };
 
     /* ---------- 阶段 A：正常挂机 ---------- */
-    console.log('\n== 阶段 A：正常挂机 ' + (MIN_A / 60000) + ' 分钟（4×）==');
+    /* 倍速从页面里读，别写死 —— 之前这里硬编码「4×」，
+       结果跑 8× 的时候日志还在报 4×，看日志的人会被带偏。 */
+    const spd = (await cdp.eval('__DNW__.state.speed')) || '?';
+    console.log('\n== 阶段 A：正常挂机 ' + (MIN_A / 60000) + ' 分钟（' + spd + '×）==');
     const tA = Date.now();
     let lastLog = 0;
     while (Date.now() - tA < MIN_A) {

@@ -48,9 +48,14 @@ if (file) {
 }
 if (!configs.length) configs = [{ tag: 'base', cfg: {} }];
 
-/* —— 任务队列：每个 (配置, 种子) 一个子进程 —— */
+/* —— 任务队列：每个 (配置, 种子) 一个子进程 ——
+   注意顺序：按**种子**做外层循环（交错），不是按配置。
+   因为 AI 的思考预算是按墙上时间算的（CFG.budgetMs），
+   机器一忙，同一个候选集就会少算几个 —— 也就是说棋力受当时负载影响。
+   若把配置 A 全跑完再跑配置 B，中途负载一变，两个配置就不在同一条件下比了。
+   按种子交错后，同一个种子的各配置几乎同时开跑，负载影响被摊平。 */
 const tasks = [];
-for (const c of configs) for (const s of SEEDS) tasks.push({ tag: c.tag, cfg: c.cfg, seed: s });
+for (const s of SEEDS) for (const c of configs) tasks.push({ tag: c.tag, cfg: c.cfg, seed: s });
 
 const results = {};   // tag -> [row]
 let done = 0, running = 0, cursor = 0;
