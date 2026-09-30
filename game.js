@@ -80,6 +80,18 @@
   const BEST_KEY = 'danaiwa.best.v1';
   const MUTE_KEY = 'danaiwa.mute.v1';
 
+  /* —— 自动模式（autoplay.js）用的“静默模拟”开关 ——
+     打开时物理照常跑，但不发声、不喷粒子、不写 DOM / localStorage。
+     这样 AI 可以放心地把几十个候选落点在后台推演一遍再挑最好的一手。 */
+  let SIM = false;
+  function setSim(on) { SIM = !!on; }
+
+  /* 自动模式的成绩默认不写排行榜、不写本机最高分（autoplay.js 里 record:false） */
+  function autoBlocked() {
+    const A = window.DNW_AUTO;
+    return !!(A && A.enabled && A.record === false);
+  }
+
   /* ---------------------------------------------------------
    *  DOM
    * ------------------------------------------------------- */
@@ -147,7 +159,7 @@
     },
 
     tone(freq, freq2, dur, vol, type) {
-      if (this.muted) return;
+      if (SIM || this.muted) return;
       const c = this.ensure();
       if (!c) return;
       if (c.state === 'suspended') c.resume();
@@ -181,7 +193,7 @@
 
   /* 手机上的轻微震动反馈（跟着静音开关走；不支持的浏览器自动忽略） */
   function haptic(ms) {
-    if (Sound.muted) return;
+    if (SIM || Sound.muted) return;
     if (navigator.vibrate) {
       try { navigator.vibrate(ms); } catch (e) { /* 忽略 */ }
     }
@@ -219,7 +231,8 @@
     cooldown: 0,
     aimX: W / 2,
     over: false,
-    flash: 0
+    flash: 0,
+    speed: 1            // 时间倍速（自动模式可以调快，人玩时保持 1）
   };
 
   /* ---------------------------------------------------------
@@ -550,6 +563,7 @@
    * ------------------------------------------------------- */
 
   function burst(x, y, tier, n, speed) {
+    if (SIM) return;                 // 后台推演不喷粒子
     const f = FRUITS[Math.min(tier, MAX_TIER)];
     const c1 = f.pc1 || f.c1;
     const c2 = f.pc2 || f.c2;
@@ -571,7 +585,8 @@
 
   function addScore(n, x, y, text) {
     state.score += n;
-    if (state.score > state.best) {
+    if (SIM) return;                 // 后台推演：只累计分数，不碰 DOM / 存档 / 飘分
+    if (state.score > state.best && !autoBlocked()) {
       state.best = state.score;
       localStorage.setItem(BEST_KEY, String(state.best));
       bestEl.textContent = state.best;
@@ -617,7 +632,7 @@
     state.pending = state.next;
     state.next = pickSpawnTier(state.pending);   // 和当前这颗不一样
     Sound.drop();
-    drawNext();
+    if (!SIM) drawNext();
     if (state.balls.length > 90) state.balls = state.balls.filter(b => !b.dead);
   }
 
@@ -657,9 +672,23 @@
     finalBestEl.textContent = state.best;
     overlay.classList.add('show');
     Sound.over();
-    /* 交给排行榜模块（没加载也不影响） */
-    if (window.DanaiwaBoard && window.DanaiwaBoard.onGameOver) {
-      window.DanaiwaBoard.onGameOver(state.score);
+    /* 交给排行榜模块（没加载也不影响）。
+       自动模式默认**只在刷新本机最高分时才交榜**，原因见下面那段注释。 */
+    if (!autoBlocked() && window.DanaiwaBoard && window.DanaiwaBoard.onGameOver) {
+      const A = window.DNW_AUTO;
+      const autoOn = !!(A && A.enabled);
+      /* 排行榜只展示**最近 20 条**（leaderboard.min.js 的 WINDOW = 20），
+         而 onGameOver 是**每局都自动提交**的。所以自动挂机如果每局都交：
+           ① 20 局就把整个榜刷成自己的名字，别人没得看；
+           ② 更糟的是把自己挤掉 —— 打出一个 9000 的高分后，
+              再挂 20 局平均 4000，那条 9000 就被挤出窗口、永久丢了。
+         所以默认只在「这局追平/刷新了本机最高分」时才交（state.best 是边打边更新的，
+         结束时 state.score >= state.best 就说明这局是新高）。
+         想每局都交：?record=all    完全不上榜：?record=0 */
+      const isRecordGame = state.score >= state.best;
+      if (!autoOn || A.record === 'all' || isRecordGame) {
+        window.DanaiwaBoard.onGameOver(state.score);
+      }
     }
   }
 
@@ -1012,15 +1041,17 @@
     let dt = (now - last) / 1000;
     last = now;
     if (dt > 0.25) dt = 0.25;      // 切后台回来不要瞬移
-    acc += dt;
+    const speed = state.speed > 1 ? state.speed : 1;
+    acc += dt * speed;             // 倍速：自动模式下可以跑快一点
 
     let guard = 0;
-    while (acc >= FIXED && guard < 5) {
+    const maxSteps = 5 * speed;
+    while (acc >= FIXED && guard < maxSteps) {
       update(FIXED);
       acc -= FIXED;
       guard++;
     }
-    if (guard >= 5) acc = 0;
+    if (guard >= maxSteps) acc = 0;
 
     render(dt);
     requestAnimationFrame(frame);
@@ -1189,6 +1220,46 @@
   }
 
   /* ---------------------------------------------------------
+   *  状态快照 / 还原（autoplay.js 用来推演候选落点）
+   *  只备份会被物理改动的东西：球（含世界坐标子圆）、分数、当前/下一个、冷却。
+   * ------------------------------------------------------- */
+
+  function copyBall(b) {
+    const c = {};
+    for (const k in b) c[k] = b[k];
+    c.wx = Float32Array.from(b.wx);
+    c.wy = Float32Array.from(b.wy);
+    c.ws = Float32Array.from(b.ws);
+    return c;
+  }
+
+  function snapshotState() {
+    return {
+      balls: state.balls.map(copyBall),
+      score: state.score,
+      pending: state.pending,
+      next: state.next,
+      ready: state.ready,
+      cooldown: state.cooldown,
+      over: state.over,
+      danger: state.danger,
+      flash: state.flash
+    };
+  }
+
+  function restoreState(s) {
+    state.balls = s.balls.map(copyBall);
+    state.score = s.score;
+    state.pending = s.pending;
+    state.next = s.next;
+    state.ready = s.ready;
+    state.cooldown = s.cooldown;
+    state.over = s.over;
+    state.danger = s.danger;
+    state.flash = s.flash;
+  }
+
+  /* ---------------------------------------------------------
    *  启动
    * ------------------------------------------------------- */
 
@@ -1214,6 +1285,11 @@
     boot();
   }
 
-  /* 调试句柄（控制台可用）：__DNW__.state / .reset() / .drop() / .FRUITS / .render() */
-  window.__DNW__ = { state, reset, tryDrop, stepPhysics, FRUITS, render, resizeCanvas, shapeOf, makeBall };
+  /* 调试句柄（控制台可用）：__DNW__.state / .reset() / .drop() / .FRUITS / .render()
+     后面几个是 autoplay.js（自动模式）用的：快照、还原、静默模拟开关。 */
+  window.__DNW__ = {
+    state, reset, tryDrop, stepPhysics, FRUITS, render, resizeCanvas, shapeOf, makeBall,
+    aimLimit, snapshotState, restoreState, setSim,
+    W, H, WALL, DANGER_Y, SUBSTEPS, FIXED, MAX_TIER
+  };
 })();

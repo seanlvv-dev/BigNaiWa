@@ -374,6 +374,89 @@ body {
   background: linear-gradient(135deg, #ff8a5b, var(--brand) 55%, var(--brand-dark));
 }
 
+/* ---------------- 自动模式 ---------------- */
+
+/* 棋盘左上角的运行状态徽标（右上角被「下一个」预览占着） */
+.auto-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: #fff;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #6bc9ff, #3b8ef0 60%, #2b6ed6);
+  box-shadow: 0 4px 12px rgba(43, 110, 214, .38);
+  pointer-events: none;
+}
+
+.auto-badge[hidden] { display: none; }
+
+.auto-bar {
+  display: flex;
+  gap: 8px;
+}
+
+.auto-toggle { flex: 1 1 auto; }
+
+.auto-toggle.active {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #6bc9ff, #3b8ef0 55%, #2b6ed6);
+  box-shadow: 0 8px 20px rgba(59, 142, 240, .35);
+}
+
+.auto-speed {
+  display: flex;
+  gap: 6px;
+}
+
+.auto-speed[hidden] { display: none; }
+
+.auto-speed button {
+  min-width: 44px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  border: 1px solid rgba(255, 255, 255, .9);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .88);
+  box-shadow: 0 6px 16px rgba(140, 96, 56, .12);
+  cursor: pointer;
+  transition: transform .12s ease, background .2s ease, color .2s ease;
+}
+
+.auto-speed button:hover { transform: translateY(-1px); }
+
+.auto-speed button.active {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #ffb457, #f2913a);
+}
+
+/* 徽标本身可以点：点一下换倍速（窄屏没有别的倍速入口，就靠它） */
+.auto-badge {
+  cursor: pointer;
+  pointer-events: auto;
+  user-select: none;
+}
+
+/* 「点我换倍速」这句提示只在窄屏显示，桌面上三个按钮够直观 */
+.auto-badge-hint { display: none; }
+
+.auto-stat {
+  margin: -8px 2px 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.auto-stat:empty { display: none; }
+
 /* ---------------- 结束弹窗里的结算区 ---------------- */
 
 .submit-box {
@@ -741,6 +824,27 @@ body {
   }
 
   #boardBtn .ico, #soundBtn .ico { margin-right: 0; }
+
+  /* ---- 自动模式：顶栏里只留一个图标，倍速选择收起（窄屏塞不下） ---- */
+  .auto-stat { display: none; }
+
+  .auto-bar { flex: 0 0 auto; }
+
+  .auto-speed { display: none !important; }
+
+  /* 窄屏没有倍速按钮了，提示「点徽标换倍速」 */
+  .auto-badge-hint { display: inline; }
+
+  #autoBtn {
+    min-width: 46px;
+    padding: 0 10px;
+    font-size: 17px;
+  }
+
+  #autoBtn .lbl { display: none; }
+  #autoBtn .ico { margin-right: 0; }
+
+  .auto-badge { top: 6px; left: 6px; padding: 3px 8px; font-size: 10.5px; }
 
   /* ---- 结束弹窗 ---- */
   .overlay { padding: 14px; }

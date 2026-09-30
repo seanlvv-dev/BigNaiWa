@@ -22,6 +22,8 @@
   <section class="stage" id="stage">
     <canvas id="game" aria-label="合成大奶娃游戏区域"></canvas>
 
+    <div class="auto-badge" id="autoBadge" hidden>🤖 自动</div>
+
     <div class="overlay" id="overlay">
       <div class="dialog">
         <div class="dialog-emoji">🍉</div>
@@ -88,9 +90,23 @@
       </button>
     </div>
 
+    <div class="auto-bar" id="autoBar">
+      <button class="btn auto-toggle" id="autoBtn" type="button" aria-pressed="false"
+              title="自动模式：AI 用真物理推演挑最优落点，自动开局、自动重开">
+        <span class="ico">🤖</span><span class="lbl">自动</span>
+      </button>
+      <div class="auto-speed" id="autoSpeed" hidden>
+        <button type="button" data-speed="1" class="active">1×</button>
+        <button type="button" data-speed="2">2×</button>
+        <button type="button" data-speed="4">4×</button>
+        <button type="button" data-speed="8">8×</button>
+      </div>
+    </div>
+    <p class="auto-stat" id="autoStat"></p>
+
     <p class="tips">
       鼠标：移动瞄准、点击投放；触屏：拖动瞄准、松手投放。<br>
-      ← → 微调位置，空格投放，R 重开。
+      ← → 微调位置，空格投放，R 重开，T 自动模式。
     </p>
 
   </aside>
@@ -141,6 +157,8 @@
 <!-- 碰撞形状数据（按贴图轮廓自动生成，由 tools/build_parts.py 产出） -->
 <script src="assets/fruits/parts.js"></script>
 <script src="game.js"></script>
+<!-- 自动模式（AI）：必须在 game.js 之后，它要用 __DNW__ -->
+<script src="autoplay.js"></script>
 <!-- 排行榜 -->
 <script src="leaderboard.min.js"></script>
 <!-- 赞助作者 -->
